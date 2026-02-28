@@ -25,6 +25,7 @@
             probe-rs-tools
             elf2uf2-rs
             pkg-config
+            picotool
           ];
 
           shellHook = ''

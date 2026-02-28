@@ -1,1 +1,2 @@
-flake.lock
+*.lock
+firmware/target/
