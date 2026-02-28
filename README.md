@@ -21,6 +21,8 @@ enabled)
 ## TODOs:
 
 ### Hardware TODOs:
+ - Build a debugger with another Pico to allow me to access SWD logs.
+ - Build the rest of the hardware platform prototype.
  - Make proper schematics for the device (include in `hardware/schematics/`).
  - Design a 3D printed case for the device (include in `hardware/case/`).
  - Add a battery and allow the device to be used headlessly.
