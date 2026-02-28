@@ -11,9 +11,6 @@
       let
         pkgs = import nixpkgs { inherit system; };
 
-        armToolchain =
-          pkgs.pkgsCross.arm-embedded.buildPackages;
-
         pico-sdk = pkgs.fetchFromGitHub {
           owner = "raspberrypi";
           repo = "pico-sdk";
@@ -28,8 +25,7 @@
             ninja
             git
             python3
-            armToolchain.gcc
-            armToolchain.binutils
+            gcc-arm-embedded
             newlib
           ];
 
