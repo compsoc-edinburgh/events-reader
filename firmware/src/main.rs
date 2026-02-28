@@ -1,29 +1,23 @@
 #![no_std]
 #![no_main]
 
-
 use cyw43_pio::{PioSpi, DEFAULT_CLOCK_DIVIDER};
-
 use defmt::*;
-
 use embassy_executor::Spawner;
+use embassy_net::{Config, Stack, StackResources};
 use embassy_rp::bind_interrupts;
 use embassy_rp::block::ImageDef;
 use embassy_rp::gpio::{Level, Output};
 use embassy_rp::peripherals::{DMA_CH0, PIO0};
 use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_time::{Duration, Timer};
-
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
-
 
 #[unsafe(link_section = ".start_block")]
 #[used]
 pub static IMAGE_DEF: ImageDef = ImageDef::secure_exe();
 
-// Program metadata for `picotool info`.
-// This isn't needed, but it's recommended to have these minimal entries.
 #[unsafe(link_section = ".bi_entries")]
 #[used]
 pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
@@ -39,6 +33,9 @@ const WIFI_FIRMWARE_BASE: u32 = 0x1030_0000;
 const BT_FIRMWARE_BASE: u32 = 0x1034_0000;
 const CLM_FIRMWARE_BASE: u32 = 0x1034_4000;
 
+const WIFI_SSID: &str = "SSID";
+const WIFI_PASSWORD: &str = "Password";
+
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
 });
@@ -50,15 +47,22 @@ async fn cyw43_task(
     runner.run().await
 }
 
+#[embassy_executor::task]
+async fn net_task(mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'static>>) -> ! {
+    runner.run().await
+}
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
-    let fw = unsafe { core::slice::from_raw_parts(WIFI_FIRMWARE_BASE as *const u8, 231077) };
-    let btfw = unsafe { core::slice::from_raw_parts(BT_FIRMWARE_BASE as *const u8, 6164) };
-    let clm = unsafe { core::slice::from_raw_parts(CLM_FIRMWARE_BASE as *const u8, 984) };
+
+    let fw  = unsafe { core::slice::from_raw_parts(WIFI_FIRMWARE_BASE as *const u8, 231077) };
+    let btfw = unsafe { core::slice::from_raw_parts(BT_FIRMWARE_BASE  as *const u8,   6164) };
+    let clm = unsafe { core::slice::from_raw_parts(CLM_FIRMWARE_BASE  as *const u8,    984) };
 
     let pwr = Output::new(p.PIN_23, Level::Low);
-    let cs = Output::new(p.PIN_25, Level::High);
+    let cs  = Output::new(p.PIN_25, Level::High);
+
     let mut pio = Pio::new(p.PIO0, Irqs);
     let spi = PioSpi::new(
         &mut pio.common,
@@ -73,8 +77,10 @@ async fn main(spawner: Spawner) {
 
     static STATE: StaticCell<cyw43::State> = StaticCell::new();
     let state = STATE.init(cyw43::State::new());
-    let (_net_device, _bt_device, mut control, runner) =
+
+    let (net_device, _bt_device, mut control, runner) =
         cyw43::new_with_bluetooth(state, pwr, spi, fw, btfw).await;
+
     unwrap!(spawner.spawn(cyw43_task(runner)));
 
     control.init(clm).await;
@@ -82,12 +88,46 @@ async fn main(spawner: Spawner) {
         .set_power_management(cyw43::PowerManagementMode::PowerSave)
         .await;
 
+    // --- Network stack setup ---
+    // Use DHCP to obtain an IP address automatically.
+    let config = Config::dhcpv4(Default::default());
 
-    // blink example
-    let loop_delay = Duration::from_secs(5);
-    let blink_delay = Duration::from_millis(125);
+    // Generate a pseudo-random seed from the RP2350 ROSC for the network stack.
+    let seed = embassy_rp::clocks::rosc_freq() as u64;
+
+    static RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
+    let (stack, net_runner) = embassy_net::new(
+        net_device,
+        config,
+        RESOURCES.init(StackResources::new()),
+        seed,
+    );
+
+    unwrap!(spawner.spawn(net_task(net_runner)));
+
+    // --- Join the WiFi network ---
     loop {
-        info!("All done - Waiting in loop!");
+        info!("Connecting to '{}'...", WIFI_SSID);
+        match control.join(WIFI_SSID, cyw43::JoinOptions::new(WIFI_PASSWORD.as_bytes())).await {
+            Ok(()) => break,
+            Err(e) => {
+                warn!("Join failed (status={}), retrying in 5 s...", e.status);
+                Timer::after(Duration::from_secs(5)).await;
+            }
+        }
+    }
+
+    // --- Wait for DHCP to assign an address ---
+    info!("Waiting for DHCP lease...");
+    stack.wait_config_up().await;
+    info!("Network up! IP: {}", stack.config_v4().unwrap().address);
+
+    // --- Blink to signal success, then idle ---
+    let blink_delay = Duration::from_millis(125);
+    let loop_delay  = Duration::from_secs(5);
+
+    loop {
+        info!("Connected – looping.");
         for _ in 0..4 {
             control.gpio_set(0, true).await;
             Timer::after(blink_delay).await;
