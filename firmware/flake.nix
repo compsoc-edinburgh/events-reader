@@ -14,8 +14,9 @@
         pico-sdk = pkgs.fetchFromGitHub {
           owner = "raspberrypi";
           repo = "pico-sdk";
-          rev = "master";
-          sha256 = "sha256-hQdEZD84/cnLSzP5Xr9vbOGROQz4BjeVOnvbyhe6rfM=";
+          rev = "a1438dff1d38bd9c65dbd693f0e5db4b9ae91779";
+          sha256 = "sha256-8ubZW6yQnUTYxQqYI6hi7s3kFVQhe5EaxVvHmo93vgk=";
+          fetchSubmodules = true;
         };
       in
       {
@@ -27,6 +28,7 @@
             python3
             gcc-arm-embedded
             newlib
+            minicom
           ];
 
           PICO_SDK_PATH = pico-sdk;

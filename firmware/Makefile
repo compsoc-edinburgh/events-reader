@@ -4,7 +4,7 @@ BOARD := pico2_w
 .PHONY: build configure clean flash
 
 configure:
-	cmake -S . -B $(BUILD_DIR) -DPICO_BOARD=$(BOARD) -G Ninja
+	cmake -S . -B $(BUILD_DIR) -DPICO_BOARD=$(BOARD) -G Ninja -DPICO_ENABLE_TINYUSB=ON
 
 build: configure
 	cmake --build $(BUILD_DIR)
