@@ -1,86 +1,99 @@
-//! Blinks the LED on a Pico board
-//!
-//! This will blink an LED attached to GP25, which is the pin the Pico uses for the on-board LED.
 #![no_std]
 #![no_main]
 
+
+use cyw43_pio::{PioSpi, DEFAULT_CLOCK_DIVIDER};
+
 use defmt::*;
-use defmt_rtt as _;
-use embedded_hal::digital::OutputPin;
-use panic_probe as _;
-use rp235x_hal::clocks::init_clocks_and_plls;
-use rp235x_hal::{self as hal, entry};
-use rp235x_hal::{Clock, pac};
 
-// Provide an alias for our BSP so we can switch targets quickly.
-// Uncomment the BSP you included in Cargo.toml, the rest of the code does not need to change.
-// use some_bsp;
+use embassy_executor::Spawner;
+use embassy_rp::bind_interrupts;
+use embassy_rp::block::ImageDef;
+use embassy_rp::gpio::{Level, Output};
+use embassy_rp::peripherals::{DMA_CH0, PIO0};
+use embassy_rp::pio::{InterruptHandler, Pio};
+use embassy_time::{Duration, Timer};
 
-/// Tell the Boot ROM about our application
+use static_cell::StaticCell;
+use {defmt_rtt as _, panic_probe as _};
+
+
 #[unsafe(link_section = ".start_block")]
 #[used]
-pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
+pub static IMAGE_DEF: ImageDef = ImageDef::secure_exe();
 
-#[entry]
-fn main() -> ! {
-    info!("Program start");
-    let mut pac = pac::Peripherals::take().unwrap();
-    let core = cortex_m::Peripherals::take().unwrap();
-    let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
-    let sio = hal::Sio::new(pac.SIO);
-
-    // External high-speed crystal on the pico board is 12Mhz
-    let external_xtal_freq_hz = 12_000_000u32;
-    let clocks = init_clocks_and_plls(
-        external_xtal_freq_hz,
-        pac.XOSC,
-        pac.CLOCKS,
-        pac.PLL_SYS,
-        pac.PLL_USB,
-        &mut pac.RESETS,
-        &mut watchdog,
-    )
-    .ok()
-    .unwrap();
-
-    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
-
-    let pins = hal::gpio::Pins::new(
-        pac.IO_BANK0,
-        pac.PADS_BANK0,
-        sio.gpio_bank0,
-        &mut pac.RESETS,
-    );
-
-    // This is the correct pin on the Raspberry Pico 2 board. On other boards, even if they have an
-    // on-board LED, it might need to be changed.
-    //
-    // Notably, on the Pico 2 W, the LED is not connected to any of the RP2350 GPIOs but to the cyw43 module instead.
-    // One way to do that is by using [embassy](https://github.com/embassy-rs/embassy/blob/main/examples/rp/src/bin/wifi_blinky.rs)
-    //
-    // If you have a Pico W and want to toggle a LED with a simple GPIO output pin, you can connect an external
-    // LED to one of the GPIO pins, and reference that pin here. Don't forget adding an appropriate resistor
-    // in series with the LED.
-    let mut led_pin = pins.gpio25.into_push_pull_output();
-
-    loop {
-        info!("on!");
-        led_pin.set_high().unwrap();
-        delay.delay_ms(500);
-        info!("off!");
-        led_pin.set_low().unwrap();
-        delay.delay_ms(500);
-    }
-}
-
-/// Program metadata for `picotool info`
+// Program metadata for `picotool info`.
+// This isn't needed, but it's recommended to have these minimal entries.
 #[unsafe(link_section = ".bi_entries")]
 #[used]
-pub static PICOTOOL_ENTRIES: [rp235x_hal::binary_info::EntryAddr; 5] = [
-    rp235x_hal::binary_info::rp_cargo_bin_name!(),
-    rp235x_hal::binary_info::rp_cargo_version!(),
-    rp235x_hal::binary_info::rp_program_description!(c"RP2350 Template"),
-    rp235x_hal::binary_info::rp_cargo_homepage_url!(),
-    rp235x_hal::binary_info::rp_program_build_attribute!(),
+pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
+    embassy_rp::binary_info::rp_program_name!(c"Embassy Template w/ WiFi & BT"),
+    embassy_rp::binary_info::rp_program_description!(
+        c"This example tests the Pico2W w/ the embassy libraries. WiFi & BT are tested as well as the SYS_LED"
+    ),
+    embassy_rp::binary_info::rp_cargo_version!(),
+    embassy_rp::binary_info::rp_program_build_attribute!(),
 ];
 
+const WIFI_FIRMWARE_BASE: u32 = 0x1030_0000;
+const BT_FIRMWARE_BASE: u32 = 0x1034_0000;
+const CLM_FIRMWARE_BASE: u32 = 0x1034_4000;
+
+bind_interrupts!(struct Irqs {
+    PIO0_IRQ_0 => InterruptHandler<PIO0>;
+});
+
+#[embassy_executor::task]
+async fn cyw43_task(
+    runner: cyw43::Runner<'static, Output<'static>, PioSpi<'static, PIO0, 0, DMA_CH0>>,
+) -> ! {
+    runner.run().await
+}
+
+#[embassy_executor::main]
+async fn main(spawner: Spawner) {
+    let p = embassy_rp::init(Default::default());
+    let fw = unsafe { core::slice::from_raw_parts(WIFI_FIRMWARE_BASE as *const u8, 231077) };
+    let btfw = unsafe { core::slice::from_raw_parts(BT_FIRMWARE_BASE as *const u8, 6164) };
+    let clm = unsafe { core::slice::from_raw_parts(CLM_FIRMWARE_BASE as *const u8, 984) };
+
+    let pwr = Output::new(p.PIN_23, Level::Low);
+    let cs = Output::new(p.PIN_25, Level::High);
+    let mut pio = Pio::new(p.PIO0, Irqs);
+    let spi = PioSpi::new(
+        &mut pio.common,
+        pio.sm0,
+        DEFAULT_CLOCK_DIVIDER,
+        pio.irq0,
+        cs,
+        p.PIN_24,
+        p.PIN_29,
+        p.DMA_CH0,
+    );
+
+    static STATE: StaticCell<cyw43::State> = StaticCell::new();
+    let state = STATE.init(cyw43::State::new());
+    let (_net_device, _bt_device, mut control, runner) =
+        cyw43::new_with_bluetooth(state, pwr, spi, fw, btfw).await;
+    unwrap!(spawner.spawn(cyw43_task(runner)));
+
+    control.init(clm).await;
+    control
+        .set_power_management(cyw43::PowerManagementMode::PowerSave)
+        .await;
+
+
+    // blink example
+    let loop_delay = Duration::from_secs(5);
+    let blink_delay = Duration::from_millis(125);
+    loop {
+        info!("All done - Waiting in loop!");
+        for _ in 0..4 {
+            control.gpio_set(0, true).await;
+            Timer::after(blink_delay).await;
+            control.gpio_set(0, false).await;
+            Timer::after(blink_delay).await;
+        }
+        Timer::after(loop_delay).await;
+    }
+}
