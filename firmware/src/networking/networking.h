@@ -1,4 +1,4 @@
-enum NETWORK_RESPONSE_CODE {
+typedef enum NETWORK_RESPONSE_CODE {
     SUCCESS,
     FAILURE,
     TIMEOUT,

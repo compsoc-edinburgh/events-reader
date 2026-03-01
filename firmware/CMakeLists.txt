@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.13)
 include($ENV{PICO_SDK_PATH}/external/pico_sdk_import.cmake)
 project(events_reader C CXX ASM)
 pico_sdk_init()
-add_executable(events_reader src/main.c lwipopts.h)
+add_executable(events_reader src/main.c src/sched/sched.c src/sched/sched.h lwipopts.h)
 target_include_directories(events_reader PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
 )
