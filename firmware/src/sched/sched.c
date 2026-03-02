@@ -66,6 +66,7 @@ void core1_worker() {
 void print_task(void* arg) {
     const char* msg = (const char*)arg;
     printf("Task says: %s\n", msg);
+    scfree(arg);
 }
 
 

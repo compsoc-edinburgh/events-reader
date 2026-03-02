@@ -35,21 +35,27 @@ void wifi_connect_task(void* arg) {
     wifi_connect_ctx_t* ctx = (wifi_connect_ctx_t*) arg;
     switch (ctx->state) {
         case WIFI_STATE_INIT:
-            // Zeroes memory in ctx struct
             // Queues storage task with callback to next stage
+            puts("WIFI_STATE_INIT");
+            ctx->state = WIFI_STATE_CONNECT;
+            enqueue_task(wifi_connect_task, arg);
             break;
         case WIFI_STATE_CONNECT:
             // Connect to wifi
-            break;
-        case WIFI_STATE_CLEANUP:
-            // Free creds struct
+            puts("WIFI_STATE_CONNECT");
+            ctx->state = WIFI_STATE_CLEANUP;
+            enqueue_task(wifi_connect_task, arg);
             break;
         case WIFI_STATE_FATAL_NO_CREDS:
-            // Throw fatal error, no wifi creds found.
-            break;
+            // Log error
+            goto cleanup;
         case WIFI_STATE_FATAL_MAX_RETRIES:
-            // Throw fatal error, failed to connect to wifi after
-            // MAX_WIFI_CONNECT_RETRIES retries
+            // Log error
+            goto cleanup;
+        case WIFI_STATE_CLEANUP:
+            puts("WIFI_STATE_CLEANUP");
+            cleanup:
+            scfree(ctx);
             break;
         default:
             break;
@@ -64,7 +70,9 @@ NETWORK_RESPONSE_CODE init_networking() {
 
     cyw43_arch_enable_sta_mode();  // enable station mode
 
-    if (enqueue_task(wifi_connect_task, (void*) 0))
+    wifi_connect_ctx_t* ctx = szalloc(sizeof(wifi_connect_ctx_t));
+    ctx->state = WIFI_STATE_INIT;
+    if (enqueue_task(wifi_connect_task, (void*) ctx))
         return PENDING;
     return FAILURE;
 }
