@@ -22,10 +22,9 @@ int main(void) {
     //  - main loop
 
     const char str[18] = "I'm SLAB Allocated";
+    char buff[0x100];
     while (true) {
-        char* s = szalloc(sizeof(str));
-        strcpy(s, str);
-        enqueue_task(print_task, s);
+        get_request("", "", buff, 0x100);
         sleep_ms(100);
     }
 }
